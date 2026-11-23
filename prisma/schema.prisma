@@ -1,0 +1,315 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// User & RBAC
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         String   @default("INVENTORY_OPERATOR") // ADMIN, WAREHOUSE_MANAGER, INVENTORY_OPERATOR, AUDITOR
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  createdPOs        PurchaseOrder[]  @relation("POCreator")
+  approvedPOs       PurchaseOrder[]  @relation("POApprover")
+  requestedTransfers StockTransfer[]  @relation("TransferRequester")
+  approvedTransfers  StockTransfer[]  @relation("TransferApprover")
+  conductedAudits   StockAudit[]     @relation("AuditConductor")
+  approvedAudits    StockAudit[]     @relation("AuditApprover")
+  movements         InventoryMovement[]
+  auditLogs         AuditLog[]
+}
+
+// Categories for products
+model Category {
+  id          String    @id @default(uuid())
+  name        String    @unique
+  description String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  products Product[]
+}
+
+// Products
+model Product {
+  id                String   @id @default(uuid())
+  sku               String   @unique
+  name              String
+  description       String?
+  categoryId        String?
+  uom               String   @default("units") // Unit of Measurement: units, pcs, kg, m, box, etc.
+  minStockThreshold Int      @default(10)
+  isArchived        Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  category          Category?            @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  warehouseInventories WarehouseInventory[]
+  supplierProducts  SupplierProduct[]
+  poItems           PurchaseOrderItem[]
+  transferItems     StockTransferItem[]
+  movements         InventoryMovement[]
+  auditItems        StockAuditItem[]
+
+  @@index([sku])
+  @@index([categoryId])
+}
+
+// Warehouses
+model Warehouse {
+  id           String   @id @default(uuid())
+  name         String
+  code         String   @unique
+  address      String
+  city         String
+  state        String?
+  country      String   @default("USA")
+  postalCode   String?
+  contactName  String?
+  contactEmail String?
+  contactPhone String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  inventories        WarehouseInventory[]
+  purchaseOrders     PurchaseOrder[]
+  sourceTransfers    StockTransfer[]      @relation("SourceWarehouse")
+  destTransfers      StockTransfer[]      @relation("DestWarehouse")
+  inventoryMovements InventoryMovement[]
+  stockAudits        StockAudit[]
+
+  @@index([code])
+}
+
+// Warehouse Inventory balances
+model WarehouseInventory {
+  id           String   @id @default(uuid())
+  warehouseId  String
+  productId    String
+  quantity     Int      @default(0)
+  minThreshold Int      @default(10)
+  updatedAt    DateTime @updatedAt
+
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([warehouseId, productId])
+  @@index([warehouseId])
+  @@index([productId])
+}
+
+// Suppliers
+model Supplier {
+  id          String   @id @default(uuid())
+  name        String
+  code        String   @unique
+  contactName String?
+  email       String?
+  phone       String?
+  address     String?
+  status      String   @default("ACTIVE") // ACTIVE, INACTIVE
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  supplierProducts SupplierProduct[]
+  purchaseOrders   PurchaseOrder[]
+
+  @@index([code])
+}
+
+// Association between suppliers and products
+model SupplierProduct {
+  id           String   @id @default(uuid())
+  supplierId   String
+  productId    String
+  supplierSku  String?
+  leadTimeDays Int      @default(7)
+  costPrice    Float    @default(0.0)
+  createdAt    DateTime @default(now())
+
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([supplierId, productId])
+  @@index([supplierId])
+  @@index([productId])
+}
+
+// Purchase Orders
+model PurchaseOrder {
+  id          String   @id @default(uuid())
+  orderNumber String   @unique
+  supplierId  String
+  warehouseId String
+  status      String   @default("DRAFT") // DRAFT, SUBMITTED, APPROVED, PARTIALLY_RECEIVED, RECEIVED, REJECTED, CANCELLED
+  subtotal    Float    @default(0.0)
+  tax         Float    @default(0.0)
+  total       Float    @default(0.0)
+  notes       String?
+  createdById String
+  approvedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  supplier   Supplier            @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  warehouse  Warehouse           @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  createdBy  User                @relation("POCreator", fields: [createdById], references: [id])
+  approvedBy User?               @relation("POApprover", fields: [approvedById], references: [id])
+  items      PurchaseOrderItem[]
+
+  @@index([orderNumber])
+  @@index([supplierId])
+  @@index([warehouseId])
+  @@index([status])
+}
+
+// Purchase Order Items
+model PurchaseOrderItem {
+  id               String @id @default(uuid())
+  purchaseOrderId  String
+  productId        String
+  quantity         Int
+  unitPrice        Float
+  subtotal         Float
+  receivedQuantity Int    @default(0)
+
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  product       Product       @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([purchaseOrderId])
+  @@index([productId])
+}
+
+// Stock Transfers between Warehouses
+model StockTransfer {
+  id                     String   @id @default(uuid())
+  transferNumber         String   @unique
+  sourceWarehouseId      String
+  destinationWarehouseId String
+  status                 String   @default("DRAFT") // DRAFT, REQUESTED, APPROVED, IN_TRANSIT, RECEIVED, REJECTED, CANCELLED
+  requestedById          String
+  approvedById           String?
+  notes                  String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  sourceWarehouse      Warehouse           @relation("SourceWarehouse", fields: [sourceWarehouseId], references: [id], onDelete: Restrict)
+  destinationWarehouse Warehouse           @relation("DestWarehouse", fields: [destinationWarehouseId], references: [id], onDelete: Restrict)
+  requestedBy          User                @relation("TransferRequester", fields: [requestedById], references: [id])
+  approvedBy           User?               @relation("TransferApprover", fields: [approvedById], references: [id])
+  items                StockTransferItem[]
+
+  @@index([transferNumber])
+  @@index([sourceWarehouseId])
+  @@index([destinationWarehouseId])
+  @@index([status])
+}
+
+// Stock Transfer Items
+model StockTransferItem {
+  id                  String @id @default(uuid())
+  stockTransferId     String
+  productId           String
+  quantityRequested   Int
+  quantityTransferred Int    @default(0)
+
+  stockTransfer StockTransfer @relation(fields: [stockTransferId], references: [id], onDelete: Cascade)
+  product       Product       @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([stockTransferId])
+  @@index([productId])
+}
+
+// Central Inventory Movement Ledger (Append-only)
+model InventoryMovement {
+  id              String   @id @default(uuid())
+  productId       String
+  warehouseId     String
+  movementType    String   // STOCK_RECEIVED, STOCK_ISSUED, TRANSFER_OUT, TRANSFER_IN, MANUAL_ADJUSTMENT, DAMAGED_STOCK, RETURNED_STOCK
+  quantity        Int      // Delta: positive for additions, negative for deductions
+  previousBalance Int
+  newBalance      Int
+  referenceId     String?  // PO ID, Transfer ID, Audit ID, or manual ref
+  referenceType   String?  // PURCHASE_ORDER, TRANSFER, AUDIT, MANUAL
+  userId          String?
+  timestamp       DateTime @default(now())
+  reason          String
+
+  product   Product    @relation(fields: [productId], references: [id], onDelete: Restrict)
+  warehouse Warehouse  @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  user      User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([productId])
+  @@index([warehouseId])
+  @@index([movementType])
+  @@index([timestamp])
+  @@index([referenceId])
+}
+
+// Stock Audit Sessions
+model StockAudit {
+  id           String    @id @default(uuid())
+  auditNumber  String    @unique
+  warehouseId  String
+  status       String    @default("DRAFT") // DRAFT, IN_PROGRESS, SUBMITTED, APPROVED, REJECTED
+  conductedById String
+  approvedById String?
+  notes        String?
+  conductedAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  warehouse   Warehouse        @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  conductedBy User             @relation("AuditConductor", fields: [conductedById], references: [id])
+  approvedBy  User?            @relation("AuditApprover", fields: [approvedById], references: [id])
+  items       StockAuditItem[]
+
+  @@index([auditNumber])
+  @@index([warehouseId])
+  @@index([status])
+}
+
+// Stock Audit Items
+model StockAuditItem {
+  id                   String  @id @default(uuid())
+  stockAuditId         String
+  productId            String
+  systemQuantity       Int
+  physicalQuantity     Int?
+  discrepancyQuantity  Int     @default(0)
+  reason               String?
+  isAdjusted           Boolean @default(false)
+
+  stockAudit StockAudit @relation(fields: [stockAuditId], references: [id], onDelete: Cascade)
+  product    Product    @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([stockAuditId, productId])
+  @@index([stockAuditId])
+  @@index([productId])
+}
+
+// System Audit Log
+model AuditLog {
+  id         String   @id @default(uuid())
+  entityType String   // PRODUCT, WAREHOUSE, PO, TRANSFER, AUDIT, USER
+  entityId   String
+  action     String   // CREATE, UPDATE, ARCHIVE, STATUS_CHANGE
+  userId     String?
+  details    String?  // JSON string
+  timestamp  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([timestamp])
+}
